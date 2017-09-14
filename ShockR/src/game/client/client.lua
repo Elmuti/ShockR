@@ -9,15 +9,61 @@ local hrpOffsetFromGround = 3
 local MOUSE_MIN, MOUSE_MAX = math.rad(-80), math.rad(80) --down angle, up angle
 local SENSITIVITY = Vector3.new(0.15, 0.15, 0) --horizontal, vertical, zoom?
 local mouseAngles = Vector2.new()
+local bobtimer = 0
 
 local ConVars = {
-	sv_accelerate = 200;
-	sv_airaccelerate = 5;
-	sv_max_velocity_ground = 200;
-	sv_max_velocity_air = 1350; 
-	sv_friction = 7.5;
+	sv_cheats = {false, true, "Turns cheats on"};
+	sv_accelerate = {200, true, "Acceleration rate", {-math.huge, math.huge}};
+	sv_airaccelerate = {5, true, "Air acceleration rate", {-math.huge, math.huge}};
+	sv_max_velocity_ground = {200, true, "Maximum velocity on the ground", {-math.huge, math.huge}};
+	sv_max_velocity_air = {1350, true, "Maximum velocity in the air", {-math.huge, math.huge}}; 
+	sv_friction = {7.5, true, "Amount of friction on surfaces", {-math.huge, math.huge}};
+	sv_motd = {"", true, "Server message of the day"};
+	
+	mp_gamemode = {"Deathmatch", true, "The current gamemode"};
+	mp_dm_fraglimit = {1, true, "The frag limit to win the game", {1, math.huge}};
+	mp_dm_timelimit = {300, true, "The time limit of the game", {1, math.huge}};
+	
+	mp_capturelimit = {5, true, "Flag capture limit", {1, math.huge}};
+
+	cl_thirdperson = {false, true, "Third person camera toggle"};
+	cl_autoswitch = {true, false, "Toggles auto-switching to picked up weapons"};
+	cl_shellfadetime = {0.75, false, "", {0, 10}};
+	cl_chathistorylength = {5, false, "", {1, 20}};
+	cl_crosshairsize = {10, false, "", {-100, 100}};
+	cl_crosshairgap = {2.5, false, "", {-100, 100}};
+	cl_crosshairalpha = {255, false, "", {0, 255}};
+	cl_footsteps = {true, false, "Toggles footstep sounds"};
+	cl_drawping = {true, false, "Toggles ping counter"};
+	cl_muzzleflash = {true, false, ""};
+	
+	cl_weaponbob_rate = {1, false, "Weapon bob animation frequency multiplier", {0, 2}};
+	cl_weaponbob_amt = {1, false, "Weapon bob animation range multiplier", {0, 2}};
+	cl_fov = {75, false, "", {20, 90}};
+	cl_zoomfov = {20, false, "", {20, 90}};
+	cl_sensitivity = {1, false, "Mouse sensitivity multiplier", {0, 100}};
+	cl_zoomsensitivity = {0.85, false, "Mouse sensitivity multiplier", {0, 100}};
+	cl_camera_orbit = {false, true, ""};
+	cl_camera_orbit_offset = {6, true, ""};
 }
 
+
+local Developers = {"StealthKing95", "Player1"}
+
+function IsDeveloper(plr)
+	for _, dev in pairs(Developers) do
+		if plr == dev then
+			return true
+		end
+	end
+	return false
+end
+
+
+local thirdpersonangle = 0
+local thirdpersonRotSpeed = 45
+local thirdperson = false
+local prevCamCF = CFrame.new()
 local actualMouseHit = Vector3.new()
 local accelDir = Vector3.new()
 local playerVelocity = Vector3.new()
@@ -46,12 +92,14 @@ local Orakel = require(game.ReplicatedStorage.Orakel.Main)
 local mathLib = Orakel.LoadModule("MathLib")
 local sndLib = Orakel.LoadModule("SoundLib")
 local assetLib = Orakel.LoadModule("AssetLib")
+local npcLib = Orakel.LoadModule("NpcLib")
 local weaponData = {}
 local lastHurtSound = tick()
 local ClientTime = 0
 
 local chatMessageDisplayTime = 4.5
 
+local canwalk = true
 local VelOffset = Vector3.new()
 local PlayerModels = {}
 local canfire = true
@@ -137,7 +185,7 @@ end
 local CooldownReduction = 0
 
 function UseAbility()
-	local curAbility = "Barrier"
+	local curAbility = "Ghostwalk"
 	local ability = require(game.ReplicatedStorage.Abilities[curAbility])
 
 	if not AbilityIsInCooldown then
@@ -186,6 +234,14 @@ function UseAbility()
 end
 
 
+function OtherPlayerDied(plr, killerweapon)
+	--if killerweapon == "Railgun" or killerweapon == "RocketLauncher" or killerweapon == "Grenade" or killerweapon == "PlasmaGun" then
+		local char = workspace.Characters:FindFirstChild(plr.Name)
+		if char then
+			npcLib.CreateGoryCorpse(char:GetPrimaryPartCFrame(), playerVelocity, {char, workspace.Ignore, workspace.PlayerSpawns, workspace.ItemPickups, workspace.ItemSpawns, workspace.Nodes})
+		end
+	--end
+end
 
 
 function UpdateJumpPadLogic(dt)
@@ -204,12 +260,12 @@ end
 local lastFallDamage = tick()
 local lastFallSound = tick()
 
-function Grounded()
-	local ray = Ray.new(char.PrimaryPart.Position, Vector3.new(0, -(hrpOffsetFromGround + 0.1), 0))
+function Grounded(dt)
+	local ray = Ray.new(char.PrimaryPart.Position, Vector3.new(0, -(math.max(hrpOffsetFromGround + 0.1, math.abs(playerVelocity.Y * dt))), 0))
 	local hit, pos = workspace:FindPartOnRayWithIgnoreList(ray, {char, workspace.Ignore, workspace.PlayerSpawns, workspace.ItemPickups, workspace.ItemSpawns, workspace.Nodes})
 	if hit then
 		char:SetPrimaryPartCFrame(CFrame.new(pos + Vector3.new(0, hrpOffsetFromGround, 0)))
-		
+		--print(hit:GetFullName())
 		local downvel = math.abs(playerVelocity.Y)
 		--print(downvel)
 		if downvel >= 20 and math.abs(tick() - lastFallSound) > 0.5 then
@@ -244,15 +300,15 @@ end
 function MoveGround(accelDir, prevVelocity, dt, grounded)
 	local speed = prevVelocity.magnitude
 	if speed ~= 0 then
-		local drop = speed * ConVars.sv_friction * dt --calculate friction
+		local drop = speed * ConVars.sv_friction[1] * dt --calculate friction
 		prevVelocity = prevVelocity * math.max(speed - drop, 0) / speed --friction affects velocity
 	end
 	
-	return Accelerate(accelDir, prevVelocity, ConVars.sv_accelerate, ConVars.sv_max_velocity_ground, dt, grounded)
+	return Accelerate(accelDir, prevVelocity, ConVars.sv_accelerate[1], ConVars.sv_max_velocity_ground[1], dt, grounded)
 end
 
 function MoveAir(accelDir, prevVelocity, dt, grounded)
-	return Accelerate(accelDir, prevVelocity, ConVars.sv_airaccelerate, ConVars.sv_max_velocity_air, dt, grounded)
+	return Accelerate(accelDir, prevVelocity, ConVars.sv_airaccelerate[1], ConVars.sv_max_velocity_air[1], dt, grounded)
 end
 
 
@@ -299,6 +355,16 @@ function CreatePlayerModel(originalPlayer)
 	char["Left Arm"].Transparency = 1
 	char["Right Arm"].Transparency = 1
 	
+	
+	local charmdl = "Circuit"
+	
+	for _, msh in pairs(game.ReplicatedStorage.Characters[charmdl]:GetChildren()) do
+		if msh.Name ~= "Head" then
+			local mc = msh:Clone()
+			mc.Parent = char
+		end
+	end
+
 	local arms = game.ReplicatedStorage.Characters.ArmsViewmodel:Clone()
 	arms.Parent = char
 	
@@ -326,98 +392,103 @@ function UpdatePlayermodels(dt)
 	if dir.Name ~= "Characters" then dir.Name = "Characters" end
 	
 	for _, plr in pairs(game.Players:GetPlayers()) do
-		local mdl = dir:FindFirstChild(plr.Name) --Get the custom character of plr
-		if mdl and mdl.PrimaryPart ~= nil then
-			if mdl ~= nil and plr.Name ~= player.Name then
-				pcall(function()
-					pos, mpos, yrot = events.GetPlayerLocation:InvokeServer(plr)
-					cwep = events.GetCurrentWeapon:InvokeServer(plr)
-				end)
-				if mdl.PrimaryPart ~= nil then
-					mdl:SetPrimaryPartCFrame(CFrame.new(pos) * yrot) --set player CFrame
-				end
+		spawn(function()
+			local mdl = dir:FindFirstChild(plr.Name) --Get the custom character of plr
+			if mdl and mdl.PrimaryPart ~= nil then
+				if mdl ~= nil and plr.Name ~= player.Name then
+					pcall(function()
+						pos, mpos, yrot = events.GetPlayerLocation:InvokeServer(plr)
+						cwep = events.GetCurrentWeapon:InvokeServer(plr)
+					end)
+					if mdl.PrimaryPart ~= nil then
+						mdl:SetPrimaryPartCFrame(CFrame.new(pos) * yrot) --set player CFrame
+					end
 				
-				local wmdl = mdl:FindFirstChild(cwep)
-				if not wmdl then --3rd person weapon model doesnt exist, create one
-					wmdl = game.ReplicatedStorage.Models[cwep]:Clone()
-					wmdl.Parent = mdl
-					wmdl:MakeJoints()
-				end
-				local weaponCode = weaponData[cwep]
-	
-				--Delete any weapon viewmodels that arent the currently selected weapon
-				for _, wm in pairs(mdl:GetChildren()) do
-					if wm.ClassName == "Model" then
-						for _, wname in pairs(WeaponIndexes) do
-							if wm.Name == wname and wm.Name ~= cwep then
-								wm:Destroy()
+					
+					local wmdl = mdl:FindFirstChild(cwep)
+					if not wmdl then --3rd person weapon model doesnt exist, create one
+						wmdl = game.ReplicatedStorage.Models[cwep]:Clone()
+						wmdl.Parent = mdl
+						wmdl:MakeJoints()
+					end
+					local weaponCode = weaponData[cwep]
+		
+					--Delete any weapon viewmodels that arent the currently selected weapon
+					for _, wm in pairs(mdl:GetChildren()) do
+						if wm.ClassName == "Model" then
+							for _, wname in pairs(WeaponIndexes) do
+								if wm.Name == wname and wm.Name ~= cwep then
+									wm:Destroy()
+								end
 							end
 						end
 					end
-				end
-
-				local ghosting = false
-
-				pcall(function()
-					ghosting = events.GetPlayerGhosting:InvokeServer(plr)
-				end)
-				
-				local arms = mdl:FindFirstChild("ArmsViewmodel")
-				if ghosting then
-					Orakel.RecursiveSearch(mdl.Head, function(obj) return (obj.ClassName == "Decal") end, function(obj) obj.Transparency = 1 end)
-					Orakel.ToggleVisible(mdl, 1, false)
-					Orakel.ToggleVisible(arms, 1, false, {"Part"})
-					if not equippedWeapon.Name == "Machinegun" then
-						Orakel.ToggleVisible(wmdl, 1, false, {"Muzzle", "Barrel"})
-					else
-						Orakel.ToggleVisible(wmdl, 1, false, {"Muzzle"})
+	
+					--Set 3rd person weapon model's CFrame
+					wmdl:SetPrimaryPartCFrame(
+						CFrame.new(pos, mpos) 
+						* CFrame.new(weaponCode.ViewModel_3rdPerson.Offset.X or 0.4, weaponCode.ViewModel_3rdPerson.Offset.Y or 0.7, weaponCode.ViewModel_3rdPerson.Offset.Z or -2.15) 
+						* CFrame.Angles(math.rad(weaponCode.ViewModel.Angle.X), math.rad(weaponCode.ViewModel.Angle.Y), math.rad(weaponCode.ViewModel.Angle.Z))
+					)
+					if mdl:FindFirstChild("ArmsViewmodel") then
+						mdl.ArmsViewmodel:SetPrimaryPartCFrame(CFrame.new(pos, mpos) * CFrame.new(0.4, 0.7, -2.15))
 					end
-				else
-					Orakel.RecursiveSearch(mdl.Head, function(obj) return (obj.ClassName == "Decal") end, function(obj) obj.Transparency = 0 end)
-					Orakel.ToggleVisible(mdl, 0, false)
-					Orakel.ToggleVisible(arms, 0, false, {"Part"})
-					Orakel.ToggleVisible(wmdl, 0, false, {"Muzzle", "Barrel"})
-				end
-
-				local bup = false
-				
-				pcall(function()
-					bup = events.GetPlayerBarrier:InvokeServer(plr)
-				end)
-				
-				if bup and not mdl:FindFirstChild("Barrier") then
-					local barrier = game.ReplicatedStorage.Particles.Barrier:Clone()
-					barrier.Parent = mdl
-				elseif not bup then
+					
+					local ghosting = false
+	
+					pcall(function()
+						ghosting = events.GetPlayerGhosting:InvokeServer(plr)
+					end)
+					
+					local arms = mdl:FindFirstChild("ArmsViewmodel")
+					if ghosting then
+						Orakel.RecursiveSearch(mdl.Head, function(obj) return (obj.ClassName == "Decal") end, function(obj) obj.Transparency = 1 end)
+						Orakel.ToggleVisible(mdl, 1, false)
+						Orakel.ToggleVisible(arms, 1, false, {"Part"})
+						if not equippedWeapon.Name == "Machinegun" then
+							Orakel.ToggleVisible(wmdl, 1, false, {"Muzzle", "Barrel"})
+						else
+							Orakel.ToggleVisible(wmdl, 1, false, {"Muzzle"})
+						end
+					else
+						Orakel.RecursiveSearch(mdl.Head, function(obj) return (obj.ClassName == "Decal") end, function(obj) obj.Transparency = 0 end)
+						Orakel.ToggleVisible(mdl, 0, false)
+						Orakel.ToggleVisible(arms, 0, false, {"Part"})
+						Orakel.ToggleVisible(wmdl, 0, false, {"Muzzle", "Barrel"})
+					end
+	
+					local bup = false
+					
+					pcall(function()
+						bup = events.GetPlayerBarrier:InvokeServer(plr)
+					end)
+					
+					if bup and not mdl:FindFirstChild("Barrier") then
+						local barrier = game.ReplicatedStorage.Particles.Barrier:Clone()
+						barrier.Parent = mdl
+					elseif not bup then
+						local barrier = mdl:FindFirstChild("Barrier")
+						if barrier then
+							barrier:Destroy()
+						end
+					end
+					
 					local barrier = mdl:FindFirstChild("Barrier")
 					if barrier then
-						barrier:Destroy()
+						barrier:SetPrimaryPartCFrame(CFrame.new(mdl:GetPrimaryPartCFrame().p, mpos))
 					end
+					
+				elseif mdl == nil and plr.Name ~= player.Name then --Character model doesnt exist, create one
+					PlayerModels[plr.Name] = CreatePlayerModel(plr)
 				end
-				
-				local barrier = mdl:FindFirstChild("Barrier")
-				if barrier then
-					barrier:SetPrimaryPartCFrame(CFrame.new(mdl:GetPrimaryPartCFrame().p, mpos))
+			else
+				--print("playermodel doesnt exist or hrp died")
+				if PlayerModels[plr.Name] then
+					PlayerModels[plr.Name]:Destroy()
 				end
-				
-				--Set 3rd person weapon model's CFrame
-				wmdl:SetPrimaryPartCFrame(
-					CFrame.new(pos, mpos) 
-					* CFrame.new(weaponCode.ViewModel_3rdPerson.Offset.X or 0.4, weaponCode.ViewModel_3rdPerson.Offset.Y or 0.7, weaponCode.ViewModel_3rdPerson.Offset.Z or -2.15) 
-					* CFrame.Angles(math.rad(weaponCode.ViewModel.Angle.X), math.rad(weaponCode.ViewModel.Angle.Y), math.rad(weaponCode.ViewModel.Angle.Z))
-				)
-				mdl.ArmsViewmodel:SetPrimaryPartCFrame(CFrame.new(pos, mpos) * CFrame.new(0.4, 0.7, -2.15))
-				
-			elseif mdl == nil and plr.Name ~= player.Name then --Character model doesnt exist, create one
 				PlayerModels[plr.Name] = CreatePlayerModel(plr)
 			end
-		else
-			--print("playermodel doesnt exist or hrp died")
-			if PlayerModels[plr.Name] then
-				PlayerModels[plr.Name]:Destroy()
-			end
-			PlayerModels[plr.Name] = CreatePlayerModel(plr)
-		end
+		end)
 	end
 end
 
@@ -461,40 +532,11 @@ end
 
 
 function ToggleScoreboard()
-	player.PlayerGui.HUD.Scoreboard.Visible = not player.PlayerGui.HUD.Scoreboard.Visible
+	if scoreboardCanBeToggled then
+		player.PlayerGui.HUD.Scoreboard.Visible = not player.PlayerGui.HUD.Scoreboard.Visible
+	end
 end
 
-
-function FindHighestScore(t, sortBy)
-	local highestscore = t[1]
-	for i = 2, #t do
-		if t[i][sortBy] > highestscore[sortBy] then
-			highestscore = t[i]
-		end
-	end
-	return highestscore.PlayerName
-end
-
-
-function SortScoreboardBy(scoreboard, sortBy)
-	local t = {}
-	for plrname, scores in pairs(scoreboard) do
-		table.insert(t, scores)
-	end
-	
-	local ret = {}
-	while #t > 0 do
-		local highest = FindHighestScore(t, sortBy)
-		table.insert(ret, highest)
-		for i, data in pairs(t) do
-			if data.PlayerName == highest then
-				table.remove(t, i)
-			end
-		end
-	end
-	
-	return ret
-end
 
 function GetMyPlacing(sortedNames)
 	for i = 1, #sortedNames do
@@ -505,82 +547,92 @@ function GetMyPlacing(sortedNames)
 end
 
 function UpdateScoreboard(dt)
-	local playerframes = player.PlayerGui.HUD.Scoreboard.Main.PlayerList:GetChildren()
-	local scoreboard = {}
-	
-	pcall(function()
-		scoreboard = events.GetPlayerScores:InvokeServer()
-	end)
-	
-	
-	local sortedNames = SortScoreboardBy(scoreboard, "Score")
-	
-	local p1 = sortedNames[1]
-	local p2 = sortedNames[2]
-	PrevSituation = CurrentSituation
-	--print("prev sit: "..PrevSituation.."  cur sit: "..CurrentSituation)
-	if #sortedNames > 1 then
-		if p1 == player.Name and not (scoreboard[p1].Score == scoreboard[p2].Score) then
+	spawn(function()
+		local playerframes = player.PlayerGui.HUD.Scoreboard.Main.PlayerList:GetChildren()
+		local scoreboard = {}
+		
+		pcall(function()
+			scoreboard = events.GetPlayerScores:InvokeServer()
+		end)
+		
+		
+		local sortedNames = mathLib.SortScoreboardBy(scoreboard, "Score")
+		
+		local p1 = sortedNames[1]
+		local p2 = sortedNames[2]
+		PrevSituation = CurrentSituation
+		--print("prev sit: "..PrevSituation.."  cur sit: "..CurrentSituation)
+		if #sortedNames > 1 then
+			if p1 == player.Name and not (scoreboard[p1].Score == scoreboard[p2].Score) then
+				CurrentSituation = "LEAD"
+			elseif p1 ~= player.Name and not (p2 == player.Name and scoreboard[p1].Score == scoreboard[p2].Score) then
+				CurrentSituation = "NOT_LEADING_OR_TIED"
+			elseif scoreboard[p1].Score == scoreboard[p2].Score and (p1 == player.Name or p2 == player.Name) then
+				CurrentSituation = "TIED"
+			end
+		else
 			CurrentSituation = "LEAD"
-		elseif p1 ~= player.Name and not (p2 == player.Name and scoreboard[p1].Score == scoreboard[p2].Score) then
-			CurrentSituation = "NOT_LEADING_OR_TIED"
-		elseif scoreboard[p1].Score == scoreboard[p2].Score and (p1 == player.Name or p2 == player.Name) then
-			CurrentSituation = "TIED"
 		end
-	else
-		CurrentSituation = "LEAD"
-	end
-	if CurrentSituation ~= PrevSituation then
-		if CurrentSituation == "TIED" then
-			sndLib.PlaySoundClient("global", "tied_for_the_lead", "rbxassetid://822279510", 0.3, 1, false, 4)
-		elseif CurrentSituation == "LEAD" then
-			sndLib.PlaySoundClient("global", "taken_the_lead", "rbxassetid://822279334", 0.3, 1, false, 4)
-		elseif CurrentSituation == "NOT_LEADING_OR_TIED" then
-			sndLib.PlaySoundClient("global", "lost_the_lead", "rbxassetid://822279169", 0.3, 1, false, 4)
+		if CurrentSituation ~= PrevSituation then
+			if CurrentSituation == "TIED" then
+				sndLib.PlaySoundClient("global", "tied_for_the_lead", "rbxassetid://822279510", 0.3, 1, false, 4)
+			elseif CurrentSituation == "LEAD" then
+				sndLib.PlaySoundClient("global", "taken_the_lead", "rbxassetid://822279334", 0.3, 1, false, 4)
+			elseif CurrentSituation == "NOT_LEADING_OR_TIED" then
+				sndLib.PlaySoundClient("global", "lost_the_lead", "rbxassetid://822279169", 0.3, 1, false, 4)
+			end
 		end
-	end
-	
-	for i, plrname in pairs(sortedNames) do
-		local scores = scoreboard[plrname]
-		local plr = game.Players:FindFirstChild(plrname)
-		if plr then
-			spawn(function()
-				local f = player.PlayerGui.HUD.Scoreboard.Main.PlayerList:FindFirstChild(plr.Name)
-				if not f then
-					f = game.ReplicatedStorage.PlayerFrame:Clone()
-					f.Size = UDim2.new(1, 0, 0.1, 0)
-					f.Name = plr.Name
+		
+		for i, plrname in pairs(sortedNames) do
+			local scores = scoreboard[plrname]
+			local plr = game.Players:FindFirstChild(plrname)
+			if plr then
+				spawn(function()
+					local f = player.PlayerGui.HUD.Scoreboard.Main.PlayerList:FindFirstChild(plr.Name)
+					if not f then
+						f = game.ReplicatedStorage.PlayerFrame:Clone()
+						f.Size = UDim2.new(1, 0, 0.1, 0)
+						f.Name = plr.Name
+						f.Position = UDim2.new(0, 0, 0.1 * i, 0)
+						f.BackgroundTransparency = 1
+						f.Parent = player.PlayerGui.HUD.Scoreboard.Main.PlayerList
+						f.Icon.Image = game:GetService("Players"):GetUserThumbnailAsync(plr.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+					end
+		
+					player.PlayerGui.HUD.Scoreboard.Placing.Text = mathLib.IntegerToNumeral(GetMyPlacing(sortedNames))
+					if CurrentSituation == "TIED" then
+						player.PlayerGui.HUD.Scoreboard.PlacingFrags.Text = "  place with "..tostring(scores.Kills).." (TIED)"
+					else
+						player.PlayerGui.HUD.Scoreboard.PlacingFrags.Text = "  place with "..tostring(scores.Kills)
+					end
 					f.Position = UDim2.new(0, 0, 0.1 * i, 0)
-					f.BackgroundTransparency = 1
-					f.Parent = player.PlayerGui.HUD.Scoreboard.Main.PlayerList
-					f.Icon.Image = game:GetService("Players"):GetUserThumbnailAsync(plr.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
-				end
-	
-				player.PlayerGui.HUD.Scoreboard.Placing.Text = mathLib.IntegerToNumeral(GetMyPlacing(sortedNames))
-				if CurrentSituation == "TIED" then
-					player.PlayerGui.HUD.Scoreboard.PlacingFrags.Text = "  place with "..tostring(scores.Kills).." (TIED)"
-				else
-					player.PlayerGui.HUD.Scoreboard.PlacingFrags.Text = "  place with "..tostring(scores.Kills)
-				end
-				f.Position = UDim2.new(0, 0, 0.1 * i, 0)
-				f.PlayerName.Text = plr.Name
-				f.Score.Text = scores.Score
-				f.Time.Text = mathLib.SecondsToTimerFormat(ClientTime)
-				pcall(function()
-					f.Ping.Text = events.GetClientPing:InvokeServer(plr).."ms"
+					local suffix = ""
+					if IsDeveloper(plr.Name) then
+						suffix = " (DEV)"
+					end
+					f.PlayerName.Text = plr.Name .. suffix
+					f.Score.Text = scores.Score
+					f.Time.Text = mathLib.SecondsToTimerFormat(ClientTime)
+					pcall(function()
+						f.Ping.Text = events.GetClientPing:InvokeServer(plr).."ms"
+					end)
+					f.KD.Text = scores.Kills.." / "..scores.Deaths
+					f.DMG.Text = scores.Damage
 				end)
-				f.KD.Text = scores.Kills.." / "..scores.Deaths
-				f.DMG.Text = scores.Damage
-			end)
+			end
 		end
-	end
+	end)
 end
 
 
 function CreateChatMessage(sender, msg, ypos, isSystemMessage)
 	local f = game.ReplicatedStorage.ChatMessage:Clone()
-	
-	f.Sender.Text = sender..":"
+	local suffix = ""
+	if IsDeveloper(sender) then
+		suffix = " (DEV)"
+		f.Sender.TextColor3 = Color3.new(0.8, 0.05, 0.05)
+	end
+	f.Sender.Text = sender..suffix..":"
 	f.Body.Text = msg
 	
 	if isSystemMessage then
@@ -612,66 +664,123 @@ function CreateChatMessage(sender, msg, ypos, isSystemMessage)
 end
 
 function UpdateChat(dt)
-	local newchatlog = {}
-
-	pcall(function()
-		newchatlog = events.GetServerChat:InvokeServer()
-	end)
+	spawn(function()
+		local newchatlog = {}
 	
-	if #newchatlog > #chatlog then
-		--print("new messages found")
-		local numNewMessages = #newchatlog - #chatlog
-		--print(numNewMessages.." new messages")
-		if numNewMessages > 0 then
-			for i = #newchatlog, 1, -1 do
-				if i <= #newchatlog - numNewMessages then
-					break
+		pcall(function()
+			newchatlog = events.GetServerChat:InvokeServer()
+		end)
+		
+		if #newchatlog > #chatlog then
+			--print("new messages found")
+			local numNewMessages = #newchatlog - #chatlog
+			--print(numNewMessages.." new messages")
+			if numNewMessages > 0 then
+				for i = #newchatlog, 1, -1 do
+					if i <= #newchatlog - numNewMessages then
+						break
+					end
+					--print("working on message #"..i)
+					local msg = newchatlog[i]
+	
+					if msg.GameInfo == true then
+						CreateChatMessage(msg.Sender, msg.Body, 0.7 - (0.1 * #newchatlog), true)
+					else
+						--print("creating the message")
+						CreateChatMessage(msg.Sender, msg.Body, 0.7 - (0.1 * #newchatlog), false)
+					end
 				end
-				--print("working on message #"..i)
-				local msg = newchatlog[i]
-
-				if msg.GameInfo == true then
-					CreateChatMessage(msg.Sender, msg.Body, 0.7 - (0.1 * #newchatlog), true)
+				--print("done fetching")
+				chatlog = newchatlog
+				--local msg = newchatlog[#newchatlog]
+				--CreateChatMessage(msg.Sender, msg.Body, 0.7 - (0.1 * #newchatlog))
+				--chatlog = newchatlog
+			end
+		end
+		
+		for _, msg in pairs(player.PlayerGui.HUD.Chat.Messages:GetChildren()) do
+			if msg.Name == "ChatMessage" or msg.Name == "SystemChatMessage" then
+				if math.abs(ClientTime - msg.Time.Value) > chatMessageDisplayTime and chatVisible then
+					msg.Body.TextTransparency = 0
+					msg.Sender.TextTransparency = 0
+				elseif math.abs(ClientTime - msg.Time.Value) > chatMessageDisplayTime and not chatVisible then
+					msg.Body.TextTransparency = 1
+					msg.Sender.TextTransparency = 1
 				else
-					--print("creating the message")
-					CreateChatMessage(msg.Sender, msg.Body, 0.7 - (0.1 * #newchatlog), false)
+					msg.Body.TextTransparency = 0
+					msg.Sender.TextTransparency = 0
 				end
 			end
-			--print("done fetching")
-			chatlog = newchatlog
-			--local msg = newchatlog[#newchatlog]
-			--CreateChatMessage(msg.Sender, msg.Body, 0.7 - (0.1 * #newchatlog))
-			--chatlog = newchatlog
 		end
-	end
-	
-	for _, msg in pairs(player.PlayerGui.HUD.Chat.Messages:GetChildren()) do
-		if msg.Name == "ChatMessage" or msg.Name == "SystemChatMessage" then
-			if math.abs(ClientTime - msg.Time.Value) > chatMessageDisplayTime and chatVisible then
-				msg.Body.TextTransparency = 0
-				msg.Sender.TextTransparency = 0
-			elseif math.abs(ClientTime - msg.Time.Value) > chatMessageDisplayTime and not chatVisible then
-				msg.Body.TextTransparency = 1
-				msg.Sender.TextTransparency = 1
+	end)
+end
+
+
+function UpdateCamera(dt)
+	if thirdperson then
+		cam.CFrame = CFrame.new(char:GetPrimaryPartCFrame().p) * CFrame.Angles(0, thirdpersonangle, 0) * CFrame.new(0, 0, 5)
+		thirdpersonangle = thirdpersonangle + math.rad(thirdpersonRotSpeed * dt)
+	else
+		do
+			if char.PrimaryPart ~= nil and PlayerStats.Health > 0 then
+				local xRot = CFrame.Angles(-mouseAngles.Y, 0, 0)
+				local yRot = CFrame.Angles(0, -mouseAngles.X, 0)
+				local pos = char.PrimaryPart.Position + Vector3.new(0, 2, 0)
+				cam.CFrame = CFrame.new(pos) * yRot * xRot
+				cam.Focus = cam.CFrame
+				prevCamCF = cam.CFrame
 			else
-				msg.Body.TextTransparency = 0
-				msg.Sender.TextTransparency = 0
+				cam.CFrame = prevCamCF
+				cam.Focus = cam.CFrame
 			end
 		end
 	end
 end
 
-function UpdateCamera(dt)
-	if char.PrimaryPart ~= nil then
-		local xRot = CFrame.Angles(-mouseAngles.Y, 0, 0)
-		local yRot = CFrame.Angles(0, -mouseAngles.X, 0)
-		local pos = char.PrimaryPart.Position + Vector3.new(0, 2, 0)
-		cam.CFrame = CFrame.new(pos) * yRot * xRot
+local grounded = true
+local timeGrounded = 0
+
+
+function GetWeaponBob()
+	local a = (math.sin(bobtimer) / 7.5) * ConVars["cl_weaponbob_amt"][1]
+	local b = (math.sin(2 * bobtimer) / 7.5) * ConVars["cl_weaponbob_amt"][1]
+	if movementKeysDown.W or movementKeysDown.A or movementKeysDown.S or movementKeysDown.D then
+		return weaponCode.ViewModel_Bob(a, b)
+	else
+		return CFrame.new()
 	end
 end
 
 
 function UpdateRender(dt)
+	bobtimer = bobtimer + (5 * dt * ConVars["cl_weaponbob_rate"][1])
+	
+	local chars = workspace.Characters:GetChildren()
+	for _, mdl in pairs(chars) do
+		local rarm = mdl:FindFirstChild("Right Arm")
+		local larm = mdl:FindFirstChild("Left Arm")
+		local hrp = mdl:FindFirstChild("HumanoidRootPart")
+		local arms = mdl:FindFirstChild("ArmsViewmodel")
+		if rarm and larm then
+			rarm.Transparency = 1
+			larm.Transparency = 1
+			rarm.LocalTransparencyModifier = 1
+			larm.LocalTransparencyModifier = 1
+		end
+		
+		if arms then
+			for _, p in pairs(arms:GetChildren()) do
+				p.Transparency = 1
+				p.LocalTransparencyModifier = 1
+			end
+		end
+		
+		if hrp then
+			hrp.Transparency = 1
+			hrp.LocalTransparencyModifier = 1
+		end
+	end
+
 	local actualMouseRay = Ray.new(mouse.UnitRay.Origin, mouse.UnitRay.Direction * 999)
 	local hit, pos, norm = workspace:FindPartOnRayWithWhitelist(actualMouseRay, {})
 	actualMouseHit = pos
@@ -688,10 +797,16 @@ function UpdateRender(dt)
 	end
 	--RAYMDL = DrawLineDebug(char:GetPrimaryPartCFrame().p, char:GetPrimaryPartCFrame().p + char:GetPrimaryPartCFrame().lookVector * 5)
 	
-	local grounded = Grounded()
+	if grounded then
+		timeGrounded = timeGrounded + dt
+	else
+		timeGrounded = 0
+	end
+	
+	grounded = Grounded(dt)
 	accelDir = Vector3.new()
 	
-	if PlayerStats.Health > 0 and not player.PlayerGui.HUD.Chat.InputFrame.Visible then
+	if PlayerStats.Health > 0 and not player.PlayerGui.HUD.Chat.InputFrame.Visible and canwalk then
 		if movementKeysDown.W then
 			accelDir = accelDir + CFrame.Angles(0, math.rad(0), 0) * (cam.CFrame.lookVector * Vector3.new(1,0,1)).unit
 		end
@@ -706,7 +821,7 @@ function UpdateRender(dt)
 		end
 	end
 
-	if grounded and not jumping then
+	if (grounded and timeGrounded > 0.15) and not jumping then
 		player.PlayerGui.HUD.SpeedTypeLabel.Text = "MoveGround"
 		playerVelocity = MoveGround(accelDir, playerVelocity, dt, grounded) + VelOffset + pushVector
 	else
@@ -723,8 +838,12 @@ function UpdateRender(dt)
 		jumping = true
 		sndLib.PlaySoundClient("global", "jump", "rbxassetid://821077345", 0.3, 1, false, 1)
 		spawn(function()
-			while not Grounded() do
-				wait()
+			while true do
+				local dt = game:GetService("RunService").RenderStepped:wait()
+				local grounded = Grounded(dt)
+				if grounded then
+					break
+				end
 			end
 			wait()
 			jumping = false
@@ -758,6 +877,7 @@ function UpdateRender(dt)
 		-- Hit found, so move to the wall position and move back from wall by hitboxadjust:
 		hitwall = true
 		origin = hitpos - hitboxadjust
+		playerVelocity = Vector3.new(0, playerVelocity.Y, 0)
 	else
 		-- No hit, simply move to the position:
 		origin = origin + movement
@@ -856,21 +976,26 @@ function UpdateRender(dt)
 			tex.Position = UDim2.new(-2, 0, 0, 0)
 		end
 	end
-	
+
 	if equippedWeapon then
-		if UseWeaponViewmodel then
-			equippedWeapon:SetPrimaryPartCFrame(
-				CFrame.new(cam.CFrame.p, mouse.Hit.p) 
-				* CFrame.new(weaponCode.ViewModel.Offset.X, weaponCode.ViewModel.Offset.Y, weaponCode.ViewModel.Offset.Z) 
-				* CFrame.Angles(math.rad(weaponCode.ViewModel.Angle.X), math.rad(weaponCode.ViewModel.Angle.Y), math.rad(weaponCode.ViewModel.Angle.Z))
-			)
-		else
-			equippedWeapon:SetPrimaryPartCFrame(
-				CFrame.new(cam.CFrame.p, mouse.Hit.p) 
-				* CFrame.new(script.Offset.Value.X, script.Offset.Value.Y, script.Offset.Value.Z) 
-				* CFrame.Angles(math.rad(script.Angle.Value.X), math.rad(script.Angle.Value.Y), math.rad(script.Angle.Value.Z))
-			)
-		end
+		--if UseWeaponViewmodel then
+			local a = (math.sin(bobtimer) / 7.5) * ConVars["cl_weaponbob_amt"][1]
+			local b = (math.sin(2 * bobtimer) / 7.5) * ConVars["cl_weaponbob_amt"][1]
+			--if weaponCode.ViewModel_Bob then
+				equippedWeapon:SetPrimaryPartCFrame(
+					CFrame.new(cam.CFrame.p, mouse.Hit.p) 
+					* CFrame.new(weaponCode.ViewModel.Offset.X, weaponCode.ViewModel.Offset.Y, weaponCode.ViewModel.Offset.Z) 
+					* CFrame.Angles(math.rad(weaponCode.ViewModel.Angle.X), math.rad(weaponCode.ViewModel.Angle.Y), math.rad(weaponCode.ViewModel.Angle.Z))
+					* GetWeaponBob() --CFrame.new(a, b, 0) 
+				)
+			--end
+		--else
+			--equippedWeapon:SetPrimaryPartCFrame(
+				--CFrame.new(cam.CFrame.p, mouse.Hit.p) 
+				--* CFrame.new(script.Offset.Value.X, script.Offset.Value.Y, script.Offset.Value.Z) 
+				--* CFrame.Angles(math.rad(script.Angle.Value.X), math.rad(script.Angle.Value.Y), math.rad(script.Angle.Value.Z))
+			--)
+		--end
 	end
 	
 	if barrierUp and not workspace.Ignore:FindFirstChild("Barrier") then
@@ -952,7 +1077,7 @@ function UpdateHeartbeat(dt)
 			local hrp = mdl:FindFirstChild("HumanoidRootPart")
 			if hrp then
 				if hrp.Position.Y <= -30 then
-					print("HRP FALLIN OUT OF MAP")
+					--print("HRP FALLIN OUT OF MAP")
 				end
 			end
 		end
@@ -995,8 +1120,10 @@ function UpdateHeartbeat(dt)
 	if PlayerStats.Health <= 0 and not respawning then
 		respawning = true
 		spawn(function()
-			char.Humanoid.WalkSpeed = 0
 			canfire = false
+			local dspawns = workspace.PlayerDebugSpawns:GetChildren()
+			local dspawn = dspawns[math.random(1, #dspawns)]
+			char:SetPrimaryPartCFrame(dspawn.CFrame)
 			wait(4)
 			playerVelocity = Vector3.new()
 			SwitchWeapon(equippedWeapon, 1, 1, false)
@@ -1083,7 +1210,7 @@ function InputBegan(io)
 		--print("mwheel")
 		--SwitchWeapon(equippedWeapon, io.Position.Z)
 	elseif io.UserInputType == Enum.UserInputType.MouseButton2 then
-		cam.FieldOfView = 20
+		cam.FieldOfView = ConVars["cl_zoomfov"][1]
 	elseif io.UserInputType == Enum.UserInputType.Keyboard then
 		for key,_ in pairs(movementKeysDown) do
 			if key == io.KeyCode.Name then
@@ -1132,7 +1259,7 @@ function InputEnded(io)
 	if io.UserInputType == Enum.UserInputType.MouseButton1 then
 		m1down = false
 	elseif io.UserInputType == Enum.UserInputType.MouseButton2 then
-		cam.FieldOfView = 70
+		cam.FieldOfView = ConVars["cl_fov"][1]
 	elseif io.UserInputType == Enum.UserInputType.Keyboard then
 		for key,_ in pairs(movementKeysDown) do
 			if key == io.KeyCode.Name then
@@ -1151,6 +1278,18 @@ function InputEnded(io)
 	end
 end
 
+function ToggleGameUI(enabled)
+	player.PlayerGui.HUD.PingLabel.Visible = enabled
+	player.PlayerGui.HUD.SpeedLabel.Visible = enabled
+	player.PlayerGui.HUD.SpeedTypeLabel.Visible = enabled
+	player.PlayerGui.HUD.WeaponsFrame.Visible = enabled
+	player.PlayerGui.HUD.VitalsFrame.Visible = enabled
+	player.PlayerGui.HUD.Killfeed.Visible = enabled
+	player.PlayerGui.HUD.AmmoFrame.Visible = enabled
+	player.PlayerGui.HUD.HurtFrame.Visible = enabled
+	player.PlayerGui.HUD.SpecialAbility.Visible = enabled
+end
+
 function Init()
 	wait(.5)
 	mouse.TargetFilter = workspace.Ignore
@@ -1165,7 +1304,7 @@ function Init()
 	if dir.Name ~= "Characters" then dir.Name = "Characters" end
 	dir.ChildAdded:connect(function(c)
 		c.ChildRemoved:connect(function(c)
-			print(tostring(c))
+			--print(tostring(c))
 		end)
 	end)
 	
@@ -1323,6 +1462,42 @@ function Init()
 	
 	game.ReplicatedStorage.ToggleBarrierClient.Event:connect(function(enabled)
 		barrierUp = enabled
+	end)
+	
+	game.ReplicatedStorage.PlayerDied.OnClientEvent:connect(OtherPlayerDied)
+	
+	game.ReplicatedStorage.ClearDecals.OnClientEvent:connect(function()
+		npcLib.ClearDecals()
+	end)
+	
+	game.ReplicatedStorage.GameEnded.OnClientEvent:connect(function(scoreboardShowtime, winner)
+		local endMusic
+		canfire = false
+		canwalk = false
+		charInvisible = true
+		scoreboardCanBeToggled = false
+		thirdperson = true
+		player.PlayerGui.HUD.WinLabel.Visible = true
+		player.PlayerGui.HUD.Scoreboard.Visible = true
+		ToggleGameUI(false)
+		if winner then
+			endMusic = sndLib.PlaySoundClient("global", "winmusic", "rbxassetid://1040473875", 0.5, 1, true, -1)
+			player.PlayerGui.HUD.WinLabel.Text = "Victory"
+		else
+			endMusic = sndLib.PlaySoundClient("global", "lossmusic", "rbxassetid://1040474024", 0.5, 1, true, -1)
+			player.PlayerGui.HUD.WinLabel.Text = "Defeat"
+		end
+		wait(scoreboardShowtime)
+		charInvisible = false
+		canfire = true
+		canwalk = true
+		endMusic:Stop()
+		endMusic:Destroy()
+		thirdperson = false
+		ToggleGameUI(true)
+		scoreboardCanBeToggled = true
+		player.PlayerGui.HUD.WinLabel.Visible = false
+		player.PlayerGui.HUD.Scoreboard.Visible = false
 	end)
 end
 

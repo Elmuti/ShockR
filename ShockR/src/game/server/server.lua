@@ -4,15 +4,46 @@ local weaponData = {}
 
 local ServerTime = 0
 
+--Convar = {? VALUE, bool ISCHEAT, string DESCRIPTION [, {number RANGE_MIN, number RANGE_MAX} ] }
 local ConVars = {
-	sv_accelerate = 200;
-	sv_airaccelerate = 5;
-	sv_max_velocity_ground = 200;
-	sv_max_velocity_air = 1350; 
-	sv_friction = 7.5;
+	sv_cheats = {false, true, "Turns cheats on"};
+	sv_accelerate = {200, true, "Acceleration rate", {-math.huge, math.huge}};
+	sv_airaccelerate = {5, true, "Air acceleration rate", {-math.huge, math.huge}};
+	sv_max_velocity_ground = {200, true, "Maximum velocity on the ground", {-math.huge, math.huge}};
+	sv_max_velocity_air = {1350, true, "Maximum velocity in the air", {-math.huge, math.huge}}; 
+	sv_friction = {7.5, true, "Amount of friction on surfaces", {-math.huge, math.huge}};
+	sv_motd = {"", true, "Server message of the day"};
+	
+	mp_gamemode = {"Deathmatch", true, "The current gamemode"};
+	mp_dm_fraglimit = {10, true, "The frag limit to win the game", {1, math.huge}};
+	mp_dm_timelimit = {300, true, "The time limit of the game", {1, math.huge}};
+	
+	mp_capturelimit = {5, true, "Flag capture limit", {1, math.huge}};
+
+	cl_thirdperson = {false, true, "Third person camera toggle"};
+	cl_autoswitch = {true, false, "Toggles auto-switching to picked up weapons"};
+	cl_shellfadetime = {0.75, false, "", {0, 10}};
+	cl_chathistorylength = {5, false, "", {1, 20}};
+	cl_crosshairsize = {10, false, "", {-100, 100}};
+	cl_crosshairgap = {2.5, false, "", {-100, 100}};
+	cl_crosshairalpha = {255, false, "", {0, 255}};
+	cl_footsteps = {true, false, "Toggles footstep sounds"};
+	cl_drawping = {true, false, "Toggles ping counter"};
+	cl_muzzleflash = {true, false, ""};
+	
+	cl_weaponbob_rate = {1, false, "Weapon bob animation frequency multiplier", {0, 2}};
+	cl_weaponbob_amt = {1, false, "Weapon bob animation range multiplier", {0, 2}};
+	cl_fov = {75, false, "", {20, 90}};
+	cl_zoomfov = {20, false, "", {20, 90}};
+	cl_sensitivity = {1, false, "Mouse sensitivity multiplier", {0, 100}};
+	cl_zoomsensitivity = {0.85, false, "Mouse sensitivity multiplier", {0, 100}};
+	cl_camera_orbit = {false, true, ""};
+	cl_camera_orbit_offset = {6, true, ""};
 }
 
 
+
+local deathmatch = require(game.ReplicatedStorage.Gamemodes.Deathmatch)
 
 local ItemSpawnCooldown = 8
 local PowerupData = {
@@ -65,15 +96,26 @@ end
 
 
 function CreateChatEntry(player, body)
-	body = string.gsub(body, "\n", "")
-	--body = game:GetService("Chat"):FilterStringAsync(body, player, playerTo)
-	table.insert(ChatHistory, {OriginalPlayer = player; Sender = player.Name; Body = body; GameInfo = false;})
-	print(player.Name..": "..body)
+	if body:len() > 0 and body:sub(1,1) == "/" then
+		local cmd = body:sub(2, body:len())
+		if cmd == "cleardecals" then
+			events.ClearDecals:FireClient(player)
+		elseif cmd == "debug" and (player.Name == "StealthKing95" or player.Name == "Player1") then
+			events.SetPlayerLocation:FireClient(player, CFrame.new(Vector3.new(160, 5, -110)))
+		end
+	else
+		body = string.gsub(body, "\n", "")
+		--body = game:GetService("Chat"):FilterStringAsync(body, player, playerTo)
+		table.insert(ChatHistory, {OriginalPlayer = player; Sender = player.Name; Body = body; GameInfo = false;})
+		print(player.Name..": "..body)
+	end
 end
 
 
-function ReplicateShootEffect(model, tgtpos)
-	
+function ReplicateShootEffect(plr, pos, tgtpos)
+	--local ray = Ray.new()
+	--local _, hitpos, norm = workspace:FindPartOnRayWithIgnoreList(ray, {workspace.Nodes, workspace.PlayerSpawns, workspace.ItemSpawns, workspace.ItemPickups, workspace.Characters})
+	--local dh = npcLib.CreateDecal(CFrame.new(pos, pos + norm), Vector3.new(0.5 ,0.5, 0.2), "http://www.roblox.com/asset/?id=22915150", "Front", false, 0)
 end
 
 
@@ -92,6 +134,7 @@ function TryDamage(player, weaponName, shooter, campos, tgtpos, tgt, ray, splash
 	--end
 end
 
+
 function TakeDamage(shooter, tgt, weaponName, splashDist)
 	local dmg = math.floor(weaponData[weaponName].Damage)
 	if splashDist ~= nil then
@@ -100,6 +143,12 @@ function TakeDamage(shooter, tgt, weaponName, splashDist)
 		local coef = 1 - (splashDist / aoe)
 		dmg = math.floor(coef * sdmg)
 	end
+	
+	--if tgt ~= nil and typeof(tgt) == "Instance" then
+		--print("tgt: "..tostring(tgt).."typeof(tgt): "..typeof(tgt).." ("..tgt:GetFullName()..")")
+	--elseif tgt ~= nil and typeof(tgt) ~= "Instance" then
+		--print("tgt: "..tostring(tgt).."typeof(tgt): "..typeof(tgt).." (nil)")
+	--end
 	
 	local plr = game.Players:FindFirstChild(tostring(tgt))
 	if plr then
@@ -111,6 +160,8 @@ function TakeDamage(shooter, tgt, weaponName, splashDist)
 			bv.Value = true
 			game.Debris:AddItem(bv, 4)
 			game.ReplicatedStorage.CreateKillfeedEntry:FireAllClients(shooter.Name, weaponName, plr.Name)
+			
+			events.PlayerDied:FireAllClients(plr, weaponName)
 			
 			--dont award kills for suicides
 			if shooter.Name ~= plr.Name then
@@ -186,6 +237,7 @@ function Init()
 			events.Push:FireClient(game.Players:FindFirstChild(pushableName), pushOrigin, pushForce)
 		end)
 	end)
+	
 end
 
 
@@ -325,7 +377,10 @@ end
 
 
 function events.GetMouseHit.OnServerInvoke(player, playerToGetFrom)
-	return events.GetMouseHit:InvokeClient(playerToGetFrom)
+	if playerToGetFrom ~= nil then
+		return events.GetMouseHit:InvokeClient(playerToGetFrom)
+	end
+	return Vector3.new()
 end
 
 function events.Ping.OnServerInvoke(player)
@@ -343,11 +398,17 @@ function events.GetPlayerScores.OnServerInvoke(_, plr)
 end
 
 function events.GetPlayerGhosting.OnServerInvoke(caller, plr)
-	return events.GetPlayerGhosting:InvokeClient(plr)
+	if plr ~= nil then
+		return events.GetPlayerGhosting:InvokeClient(plr)
+	end
+	return false
 end
 
 function events.GetPlayerBarrier.OnServerInvoke(caller, plr)
-	return events.GetPlayerBarrier:InvokeClient(plr)
+	if plr ~= nil then
+		return events.GetPlayerBarrier:InvokeClient(plr)
+	end
+	return false
 end
 
 events.GetPlayerPlacement.OnServerInvoke = GetPlayerPlacement
@@ -379,19 +440,20 @@ game.Players.PlayerRemoving:connect(function(player)
 	end
 end)
 
+function ClearScoreboard()
+	for _, scores in pairs(Scoreboard) do
+		for key, value in pairs(scores) do
+			if key ~= "PlayerName" then
+				scores[key] = 0
+			end
+		end
+	end
+end
+
 game.Players.PlayerAdded:connect(function(plr)
 	events.PlayerAdded:FireAllClients(plr)
 	table.insert(ChatHistory, {OriginalPlayer = plr; Sender = plr.Name; Body = plr.Name.." has joined the game."; GameInfo = true;})
 	
-	--[[table.insert(Scoreboard, {
-		PlayerName = "";
-		Score = 0;
-		Kills = 0;
-		Deaths = 0;
-		Damage = 0;
-		Time = 0;
-		Ping = 0;
-	})]]
 	Scoreboard[plr.Name] = {
 		PlayerName = plr.Name;
 		Score = 0;
@@ -404,23 +466,29 @@ game.Players.PlayerAdded:connect(function(plr)
 	
 	plr.CharacterAdded:connect(function(char)
 		wait()
-		local spawns = workspace.PlayerSpawns:GetChildren()
-		local cspawn = spawns[math.random(1, #spawns)]
-		--char:SetPrimaryPartCFrame(cspawn.CFrame)
-		events.SetPlayerLocation:FireClient(plr, cspawn.CFrame)
-		
-		char.Humanoid.WalkSpeed = 32
-		char.Humanoid.JumpPower = 50
-		char.Head.Mesh:Destroy()
-		
-		for _, cmesh in pairs(game.ReplicatedStorage.Characters.Circuit:GetChildren()) do
-			if cmesh.ClassName == "CharacterMesh" then
-				local nm = cmesh:Clone()
-				nm.Parent = char
-			else
-				local nm = cmesh:Clone()
-				nm.Parent = char.Head
+		if not plr:FindFirstChild("JoinedAlready") then
+			local spawns = workspace.PlayerSpawns:GetChildren()
+			local cspawn = spawns[math.random(1, #spawns)]
+			--char:SetPrimaryPartCFrame(cspawn.CFrame)
+			events.SetPlayerLocation:FireClient(plr, cspawn.CFrame)
+			
+			char.Humanoid.WalkSpeed = 32
+			char.Humanoid.JumpPower = 50
+			char.Head.Mesh:Destroy()
+			
+			for _, cmesh in pairs(game.ReplicatedStorage.Characters.Circuit:GetChildren()) do
+				if cmesh.ClassName == "CharacterMesh" then
+					local nm = cmesh:Clone()
+					nm.Parent = char
+				else
+					local nm = cmesh:Clone()
+					nm.Parent = char.Head
+				end
 			end
+			
+			local jv = Instance.new("BoolValue")
+			jv.Name = "JoinedAlready"
+			jv.Parent = plr
 		end
 	end)
 end)
@@ -429,4 +497,18 @@ end)
 while true do
 	local dt = wait(1/10)
 	ServerTime = ServerTime + dt
+	local gameover, winner = deathmatch.GetStatus(ServerTime, ConVars, Scoreboard)
+	if gameover then
+		wait(1)
+		for _, plr in pairs(game.Players:GetPlayers()) do
+			if plr.name == winner then
+				events.GameEnded:FireClient(plr, 16.5, true)
+			else
+				events.GameEnded:FireClient(plr, 16.5, false)
+			end
+		end
+		wait(16.5)
+		ClearScoreboard()
+		ServerTime = 0
+	end
 end
